@@ -2,7 +2,6 @@
  * TODO:
  * termostatická kontrola teploty
  *  ^otestovat!
- * //příjem a odesílání teploty MQTT
  * detekce otevřeného okna
  * 
 */
@@ -38,6 +37,8 @@ DS18B20 sensor(&oneWire);
   const int mqttPort = 1883;
   const char* mqttUser = "ESPclient";
   const char* mqttPassword = "mqttpassword";
+  
+  const char* OTApassword = "otapassword";
 #endif
 
 const int T1 = D7;
@@ -49,7 +50,7 @@ const int T3 = D8;
 #define DIR_NONE 0
 int dir = DIR_NONE;
 
-//stores sum of time that motor traveled in series in one direction 
+//stores sum of time that motor moved in series in one direction 
 // so in summer it doesn't just close all the time
 unsigned long cnt_same_direction = 0; 
 const unsigned long same_direction_threshold = 60 * 1000;
@@ -67,7 +68,7 @@ unsigned long time_last_react;
 //hysteresis when valve reacts on temperature over/under desired temp. target
 #define HYSTERESIS_OVER 0.05
 
-#define HYSTERESIS_UNDER 0.3
+#define HYSTERESIS_UNDER 0.15
 
 #define DIFF_MULTIPLIER 4
 
@@ -81,6 +82,7 @@ bool heating_on = true;
 
 bool window_opened = false;
 #define HYSTERESIS_OPENED_WINDOW 1.5
+#define HYSTERESIS_CLOSED_WINDOW 0.2
 
 /*NTP section*/
 //update every 24 hrs.
@@ -115,7 +117,7 @@ void WifiOtaON() {
   }
 
   // password for uploading new code to ESPs
-  ArduinoOTA.setPassword("admin");
+  ArduinoOTA.setPassword(OTApassword);
 
   ArduinoOTA.onStart([]() {
     String type;
@@ -269,7 +271,7 @@ bool OpenedWindow(){
       return true;
     }
   //if window is already detected open, check if closed (last measurement is rising against previous two)
-  } else if (temps[T_SIZE-1] > temps[T_SIZE-3] && temps[T_SIZE-1] > temps[T_SIZE-2] && window_opened == false){
+  } else if ( ((temps[T_SIZE-2] + temps[T_SIZE-1]) / 2) - ((temps[0] + temps[1]) / 2) > HYSTERESIS_CLOSED_WINDOW && window_opened == false){
     return false;
   }
   
@@ -439,14 +441,20 @@ void loop() {
         if (OpenedWindow() == true){
           window_opened = true;
           MotorClose(same_direction_threshold);
-          //TODO MQTT publish info about opened window
+          
+          //MQTT publish info about opened window
+          client.publish("living_room/valve1/window_opened", "ON");
         //if window was open and is now closed
         } else if (window_opened == true){
           window_opened = false;
-          if (temps[T_SIZE-1] + 2 < target_temp){
+          //MQTT publish info window closed
+          client.publish("living_room/valve1/window_opened", "OFF");
+          //if temp is too low, continue heating from full blast:
+          if (temps[T_SIZE-1] + 3 < target_temp){
             MotorOpen(same_direction_threshold); 
           }
         }
+        //window isn't open, continue normally
         else {
           MotorOpen(OPEN_MULTIPLIER * diff_temp * (-1));
         }

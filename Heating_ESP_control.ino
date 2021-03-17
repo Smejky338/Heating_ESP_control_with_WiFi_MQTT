@@ -3,10 +3,13 @@
  * termostatická kontrola teploty
  *  ^otestovat!
  * detekce otevřeného okna
- * 
+ * Při neúspěšném připojení otevře AP a umožní připojit pro nastavení 
+ *  ^https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiScan/WiFiScan.i
+ *  ^https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiAccessPoint/WiFiAccessPoint.ino
 */
 #include <ESP8266WiFi.h>
-#include <ESP8266mDNS.h>
+
+//#include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 
@@ -15,6 +18,11 @@
 //DS18B20 reading using lib by Rob Tillaart
 #include <OneWire.h>
 #include <DS18B20.h>
+
+//PID
+//#include <PID_v1.h>
+
+#include "QuickPID.h"
 
 //MQTT:
 #include <PubSubClient.h>
@@ -37,7 +45,8 @@ DS18B20 sensor(&oneWire);
   const int mqttPort = 1883;
   const char* mqttUser = "ESPclient";
   const char* mqttPassword = "mqttpassword";
-  
+
+  //password for uploading OTA updates to ESP
   const char* OTApassword = "otapassword";
 #endif
 
@@ -68,25 +77,48 @@ unsigned long time_last_react;
 //hysteresis when valve reacts on temperature over/under desired temp. target
 #define HYSTERESIS_OVER 0.05
 
-#define HYSTERESIS_UNDER 0.15
+#define HYSTERESIS_UNDER 0.2
 
 #define DIFF_MULTIPLIER 4
 
 //multiplier for closing/opening valve in ms per 1 dg. C
-#define CLOSE_MULTIPLIER 4000
+#define CLOSE_MULTIPLIER 5000
 
 #define OPEN_MULTIPLIER 1500
 
-double target_temp = 23.0;
+//multiplier for closing valve when already above desired temp so it doesn't overshoot
+#define OPEN_ABOVE_MULTIPLIER 200
+
+double target_temp = 21.0;
 bool heating_on = true;
 
+
+/**PID part:
+ * using library available from https://github.com/Dlloydev/QuickPID
+*/
+int16_t Setpoint = target_temp, Input, Output;
+
+float aggKp = 3, aggKi = 0.25, aggKd = 0.2;
+float consKp = 1, consKi = 0.05, consKd = 0.25;
+float aggPOn = 0.8; // Range is 0.0 to 1.0 (1.0 is 100% P on Error, 0% P on Measurement)
+float consPOn = 0.0; // Range is 0.0 to 1.0 (0.0 is 0% P on Error, 100% P on Measurement)
+
+/**Stores previous position of valve, used to determine motor movement
+ * 0 = fully closed valve, 255 = open
+*/
+int8_t prev_position;
+
+//Specify the links and initial tuning parameters
+QuickPID myQuickPID(&Input, &Output, &Setpoint, consKp, consKi, consKd, aggPOn, DIRECT);
+
+
 bool window_opened = false;
-#define HYSTERESIS_OPENED_WINDOW 1.5
-#define HYSTERESIS_CLOSED_WINDOW 0.2
+#define HYSTERESIS_OPENED_WINDOW 1
+#define HYSTERESIS_CLOSED_WINDOW 0.3
 
 /*NTP section*/
-//update every 24 hrs.
-#define NTP_PERIOD 1000*60*60*24
+//update every 48 hrs.
+#define NTP_PERIOD 1000*60*60*48
 
 #define PragueOffset 3600 //UTC+1
 
@@ -106,7 +138,10 @@ unsigned long time_last_send = 0;
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-
+/**
+ * Initializes WiFi connection and starts endpoint for OTA updates. 
+ * If WiFi connection wasn't succesful, restarts whole ESP and starts again.
+ */
 void WifiOtaON() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(STASSID, STAPSK);
@@ -116,7 +151,7 @@ void WifiOtaON() {
     ESP.restart();
   }
 
-  // password for uploading new code to ESPs
+  //set password for uploading new code to ESPs
   ArduinoOTA.setPassword(OTApassword);
 
   ArduinoOTA.onStart([]() {
@@ -127,7 +162,7 @@ void WifiOtaON() {
       type = "filesystem";
     }
 
-    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
+    // NOTE: if updating FS unmount it using FS.end()
     Serial.println("Start updating " + type);
   });
   ArduinoOTA.onEnd([]() {
@@ -156,7 +191,7 @@ void WifiOtaON() {
   Serial.println(WiFi.localIP());
 }
 
-//initializates MQTT connection. Subsctibing happens in setup()
+//initializates MQTT connection. Subscribing happens in setup()
 //inspired from https://techtutorialsx.com/2017/04/09/esp8266-connecting-to-mqtt-broker/
 bool MQTTinit(){
   client.setServer(mqttServer, mqttPort);
@@ -171,16 +206,19 @@ bool MQTTinit(){
   if (client.connect(mqttID, mqttUser, mqttPassword )) {
     Serial.println("MQTT connected");  
     
+    //SUB to topics valve is interested in to get info about for its operation (controls, weather info, ...)
     client.subscribe("living_room/valve1/desired_temp/set");
     client.subscribe("living_room/valve1/mode/set");
-    //SUB
+    
+    //MQTT publish info window closed
+    client.publish("living_room/valve1/window_opened", "OFF");
+    
+    return true;
   } else {
     Serial.print("failed with state ");
     Serial.println(client.state());
     return false;
   }
-
-  return true;
 }
 
 //handles incoming MQTT messages.
@@ -208,6 +246,8 @@ void handleMQTT(char* topic, byte* payload, unsigned int length){
   
   if (!strcmp(topic, "living_room/valve1/desired_temp/set")){
     target_temp = atof(pomtext);
+
+    Setpoint = target_temp;
     Serial.print("New target_temp=");
     Serial.println(target_temp);
   } else if (!strcmp(topic, "living_room/valve1/mode/set")){//off|heat
@@ -267,12 +307,13 @@ bool OpenedWindow(){
   }
   if (window_opened == false){
     if ( ((temps[0] + temps[1]) / 2) - ((temps[T_SIZE-2] + temps[T_SIZE-1]) / 2) >= HYSTERESIS_OPENED_WINDOW ){
-      
       return true;
     }
   //if window is already detected open, check if closed (last measurement is rising against previous two)
-  } else if ( ((temps[T_SIZE-2] + temps[T_SIZE-1]) / 2) - ((temps[0] + temps[1]) / 2) > HYSTERESIS_CLOSED_WINDOW && window_opened == false){
+  } else if ( ((temps[T_SIZE-2] + temps[T_SIZE-1]) / 2) - ((temps[T_SIZE-4] + temps[T_SIZE-3]) / 2) >= HYSTERESIS_CLOSED_WINDOW ){
     return false;
+  } else {
+    return true;
   }
   
 
@@ -351,7 +392,8 @@ bool CheckMotorTimeUntil(){
     digitalWrite(T3, HIGH);
     delay(100);
     if (time_until > 0) {
-      Serial.println("Cancelling closing/opening, should have been closed/opened at T_U=" + String(time_until) + ", diff=" + String(millis()-time_until) + ", now=" + String(millis()));
+      Serial.print("Cancelling closing/opening, should have been closed/opened at T_U=" + String(time_until) + ", diff=");
+      Serial.println(String(millis()-time_until) + ", now=" + String(millis()));
     }
     time_until = 0;
     
@@ -377,17 +419,29 @@ void setup() {
   //initialize sensor and measure first temp:
   sensor.begin();
   //sensor.setResolution(12);
-  temps[T_SIZE-1] = getTemp();
+  temps[0] = getTemp();
+  for (int i=1; i<T_SIZE; i++){
+    temps[i] = temps[i-1];
+  }
+  
 
   timeClient.begin();
   timeClient.update();
 
   MQTTinit();
+
   
+  Input = temps[T_SIZE-1];
+  Setpoint = target_temp;
+  
+  //turn the PID on
+  myQuickPID.SetMode(AUTOMATIC);
+ 
   delay(5000);//wait for the original board to do its bootup thing...
 
   MotorOpen(same_direction_threshold);
-  
+  prev_position = 255;
+
   time_last_react = 0;
 }
 
@@ -395,6 +449,7 @@ void loop() {
   char temps_text[32];
   double temp;
   bool gotTemp = false;
+  int8_t diff_position;
 
   //Handle possible OTA updates:
   ArduinoOTA.handle();
@@ -414,24 +469,87 @@ void loop() {
 
   //called twice inside this loop so there is not that long possible delay
   CheckMotorTimeUntil();
+
   
   //check if it is time to get temp and determine motor movement:
   if (millis() - time_last_react > REACT_TIME){
     gotTemp = true;
     temp = getTemp();
     TempsPushBack(temp);
-    sprintf(temps_text, "Temps: %f %f %f %f", temps[0], temps[1], temps[2], temps[3]); 
     
+    sprintf(temps_text, "Temps: %f %f %f %f", temps[0], temps[1], temps[2], temps[3]); 
     Serial.println(temps_text);
-  
+
+    /**
+     * Experimental PID part
+    */
+    Input = temps[T_SIZE-1];
+    /*if (abs(target_temp - Input) < 1) { //we're close to setpoint, use conservative tuning parameters
+      myQuickPID.SetTunings(consKp, consKi, consKd, consPOn);
+    } else {
+      */
+      //we're far from setpoint, use aggressive tuning parameters
+      myQuickPID.SetTunings(aggKp, aggKi, aggKd, aggPOn);
+    /*}*/
+    
+    myQuickPID.Compute();
+    
+    //check if heating is on/off and no motor movement is happening:
+    if (time_until == 0 && heating_on == true){
+      //check opened window => close valve
+      if (OpenedWindow() == true){
+        window_opened = true;
+        MotorClose(same_direction_threshold);
+        prev_position = 0;
+        
+        //MQTT publish info about opened window
+        client.publish("living_room/valve1/window_opened", "ON");
+        //if window was open and is now closed
+      } else if (window_opened == true){
+        window_opened = false;
+        //MQTT publish info window closed
+        client.publish("living_room/valve1/window_opened", "OFF");
+        //if temp is too low, continue heating from full blast:
+        if (temps[T_SIZE-1] + 3 < target_temp){
+          MotorOpen(same_direction_threshold);
+          prev_position = 255;
+        }
+      //heating is ON and window is closed, so we can control heating:
+      } else {
+        diff_position = Output - prev_position;
+        //Check if diff of new position is a bit significant:
+        if (abs(diff_position) >= 5){
+          //move in the correct direction:
+          if (diff_position > 0){
+            MotorOpen(abs(diff_position) / 255 * same_direction_threshold);
+          } else {
+            MotorClose(abs(diff_position) / 255 * same_direction_threshold);
+          }
+          prev_position = Output;
+        }
+        
+        char outputstr[16];//just to be sure in case int somehow becomes bigger than 16b
+        sprintf(outputstr, "%d", Output);
+        client.publish("living_room/valve1/PIDvalue", outputstr);
+      }
+      //log that reaction happened:
+      time_last_react = millis();
+    } else if (heating_on == false){
+      MotorClose(same_direction_threshold);
+    }
+    /*
+     * End of PID part
+    */
+
+     
+    /*
     //if no motor movement is happening and heating is on, determine if there should be some:
     if (time_until == 0 && heating_on == true){
       double predict_temp = PredictTemp();
       Serial.print("predict_temp=");
       Serial.println(predict_temp);
-      
       double diff_temp = predict_temp - target_temp;
-  
+      
       //if the temp will overshoot, close the valve a bit: (but close more than open, the radiator will hold the heat for ~10 more minutes)
       if (diff_temp > 0 && (diff_temp * DIFF_MULTIPLIER > HYSTERESIS_OVER) ){
         MotorClose(CLOSE_MULTIPLIER * diff_temp);
@@ -447,7 +565,7 @@ void loop() {
         //if window was open and is now closed
         } else if (window_opened == true){
           window_opened = false;
-          //MQTT publish info window closed
+          //MQTT publishmqttser info window closed
           client.publish("living_room/valve1/window_opened", "OFF");
           //if temp is too low, continue heating from full blast:
           if (temps[T_SIZE-1] + 3 < target_temp){
@@ -456,14 +574,27 @@ void loop() {
         }
         //window isn't open, continue normally
         else {
-          MotorOpen(OPEN_MULTIPLIER * diff_temp * (-1));
+          //current temp is above desired, open just a tiny bit:
+          if ( (temps[T_SIZE-1] + temps[T_SIZE-2]) / 2.0 > target_temp){
+            MotorOpen(OPEN_ABOVE_MULTIPLIER * diff_temp * (-1));
+          //current temp is under desired, open more as usual
+          } else {
+            MotorOpen(OPEN_MULTIPLIER * diff_temp * (-1));
+          }
         }
       }
     } else if (heating_on == false){
       MotorClose(same_direction_threshold);
     }
     time_last_react = millis();
+    */
   } 
+
+/*
+  //DBG
+  MotorOpen(same_direction_threshold);
+  prev_position = 255;
+*/
 
   /*MQTT temp sending, checks if previous block happend and if so, then it just gets recent temperature from there and doesn't get it from sensor
    * that's because the sensor could get heated up from just recent sending of temp data.

@@ -5,12 +5,15 @@
    Opens AP to login and change credentials of network & MQTT broker 
       - done, possible extension: show list of available WiFi networks
         ^https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiScan/WiFiScan.i
+   BOOST from HASS
 */
 #include <ESP8266WiFi.h>
 
 //HTTP server:
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
+//#include <ESPAsyncWebServer.h>//async in handlesettingsupdate cannot yield, but it has to or ESP sometimes panics into bootloop
+
 #include <ESP8266mDNS.h>
 
 #include <string.h>
@@ -55,11 +58,15 @@ DS18B20 sensor(&oneWire);
 #define STAPSK  "WiFipassword"
 #endif
 
+#define WIFI_RETRIES 3
+
 //WiFi host (AP) fallback credentials
 #ifndef APSSID
 #define APSSID "ESPValve"
 #define APPSK "WiFiAPpassword"
 #endif
+
+
 
 //MQTT fallback credentials, should be included from credentials.h
 #ifndef MQTTCRED
@@ -86,9 +93,9 @@ struct Config {
 
 struct Config *loaded_config;
 
-//pins to control H-bridge and in turn control the valve motor:
-const int T1 = D7;
-const int T3 = D8;
+//pins to control H-bridge in order to control the valve motor:
+const int T1 = D8;
+const int T3 = D7;
 
 //stores last direction of motor
 #define DIR_OPEN 1
@@ -132,10 +139,10 @@ bool heating_on = true;
 /**PID part:
   *using library available from https://github.com/Dlloydev/QuickPID
 */
-int16_t Setpoint = target_temp, Input, Output;
+int16_t Setpoint = target_temp * 100, Input, Output;
 
-float aggKp = 2, aggKi = 0.01, aggKd = 0.1;
-float consKp = 10, consKi = 0.0001, consKd = 0.00;
+float aggKp = 2, aggKi = 0.2, aggKd = 0.2;
+float consKp = 5, consKi = 0.0001, consKd = 0.001;//not used
 float aggPOn = 0.1; // Range is 0.0 to 1.0 (1.0 is 100% P on Error, 0% P on Measurement)
 float consPOn = 0.00; // Range is 0.0 to 1.0 (0.0 is 0% P on Error, 100% P on Measurement)
 
@@ -177,6 +184,7 @@ PubSubClient client(espClient);
 
 //HTTP server inspired from example AdvancedWebServer Copyright (c) 2015, Majenko Technologies
 ESP8266WebServer server(80);
+//AsyncWebServer server(80);
 
 /**
    HTTP webpage inspired from user ACROBOTIC at https://www.youtube.com/watch?v=lyoBWH92svk 
@@ -234,7 +242,7 @@ char webpage[] PROGMEM = R"=====(
   <input value="" id="MQTTip" placeholder="IP address of MQTT broker"/>
 
   <label for="MQTTport">MQTT port</label>
-  <input value="" id="MQTTport" placeholder="port of MQTT broker" value="1883"/>
+  <input value="" id="MQTTport" placeholder="port of MQTT broker, usually 1883"/>
 
   <label for="MQTTusername">MQTT username (optional)</label>
   <input value="" id="MQTTusername" placeholder="MQTT username"/>
@@ -277,18 +285,23 @@ char webpage[] PROGMEM = R"=====(
  *  - MQTT IP address
  *  could show list of APs nearby
  */
-void HandleRoot(){
+void HandleRoot(/*AsyncWebServerRequest *request*/){
+  Serial.println("HandleRoot mainpage");
   server.send_P(200, "text/html", webpage);
 }
 
 /**
  * stores JSON data to flashsfile system
  */
-void HandleSettingsUpdate(){
+void HandleSettingsUpdate(/*AsyncWebServerRequest *request*/){
+  Serial.println("HandleSettingsUpdate start");
+
   //receive JSON data to data and parse it
   String data = server.arg("plain");
   DynamicJsonBuffer j_buffer;
   JsonObject& j_object = j_buffer.parseObject(data);
+
+  yield();
 
   //store parsed data to file
   File config_file = SPIFFS.open("/config.json", "w");
@@ -296,12 +309,14 @@ void HandleSettingsUpdate(){
     Serial.println("ERR opening /config.json in HandleSettingsUpdate!!!");
     return;
   }
+  
+  Serial.println("");
   j_object.printTo(config_file);
   config_file.flush();
   config_file.close();
 
   server.send(200, "application/json", "{\"status\":\"ok\"}");
-  
+
   Serial.println("Settings updated, Restarting in 2s ...");
 
   delay(2000);
@@ -363,13 +378,13 @@ struct Config *LoadConfig(const char *filename){
 
 /**
  * Initializes WiFi connection and starts endpoint for OTA updates. 
+ * If connection to WiFi as STA (client) is not successful, open AP to load new config.
  */
 bool WifiOtaON(){
   //default is STATION+AP and we want that
   //to configure WiFi credentials + IP address of server
-  //WiFi.mode(WIFI_STA);
-  
-  //start host/AP:
+  WiFi.mode(WIFI_STA);
+
   //firstly let's add random string to differentiate from other ESPValves around here:
   char APssid[30] = APSSID;
   if (strnlen(APssid, 25) < 24){
@@ -378,22 +393,34 @@ bool WifiOtaON(){
   } else {
     APssid[29] = '\0';
   }
-  //the AP start itself:
-  if (WiFi.softAP(APssid, APPSK)){
-    Serial.print("AP IP addr:");
-    Serial.println(WiFi.softAPIP());
-  }
-
+    
   //secondly, start station/client:
   if (loaded_config != NULL){
     WiFi.begin(loaded_config->ap_ssid, loaded_config->ap_psk);
   } else {
     WiFi.begin(STASSID, STAPSK);  
   }
-  if (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    Serial.println("WiFi Connection Failed!");
+  bool connect_success = false;
+  //try to connect for a few times:
+  for (int i = 0; i < WIFI_RETRIES; i++) {
+    if (WiFi.waitForConnectResult() != WL_CONNECTED) {
+      Serial.println("WiFi Connection as STA Failed! Trying again..");
+    } else {
+      connect_success = true;
+      break;
+    }
   }
- 
+  //if connection was unsuccessful, open AP:
+  if (connect_success != true) {
+    //start host/AP: change to AP+STA mode
+    WiFi.mode(WIFI_AP_STA);
+    //the AP start itself:
+    if (WiFi.softAP(APssid, APPSK)){
+      Serial.print("AP IP addr:");
+      Serial.println(WiFi.softAPIP());
+    }
+  }
+  
   if (!MDNS.begin(APssid)){
     Serial.println("mDNS startup failed!");
   } else {
@@ -411,7 +438,6 @@ bool WifiOtaON(){
     } else { // U_FS
       type = "filesystem";
     }
-
     // NOTE: if updating FS unmount it using FS.end()
     Serial.println("Start updating " + type);
   });
@@ -466,7 +492,7 @@ void handleMQTT(char* topic, byte* payload, unsigned int length){
   if (!strcmp(topic, "living_room/valve1/desired_temp/set")){
     target_temp = atof(pomtext);
 
-    Setpoint = target_temp;
+    Setpoint = target_temp * 100;
     Serial.print("New target_temp=");
     Serial.println(target_temp);
   } else if (!strcmp(topic, "living_room/valve1/mode/set")){//off|heat
@@ -692,6 +718,8 @@ void setup() {
   pinMode(T3, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
 
+  pinMode(A0, INPUT);
+
   digitalWrite(LED_BUILTIN, LOW);
 
   //initializes serial communication, accesible by cable:
@@ -702,26 +730,41 @@ void setup() {
   
   loaded_config = LoadConfig("/config.json");
 
-  //starts WiFi AP+STAtion and OTA updates endpoint and mDNS responder
+  //starts WiFi STAtion, if it doesn't connect succesffully, starts AP to store new settings. and OTA updates endpoint and mDNS responder
   WifiOtaON();
+
+  Serial.println("DBG");
   
   //initialize sensor and measure first temp:
   sensor.begin();
+  Serial.println("DBG");
   temps[0] = getTemp();
+  Serial.println("DBG gettemp done");
   for (int i=1; i<T_SIZE; i++){
     temps[i] = temps[i-1];
   }
+  Serial.println("DBG2");
   
   timeClient.begin();
   timeClient.update();
 
+  Serial.println("DBG3");
+
   MQTTinit();
+  Serial.println("DBG4");
 
   InitWeb();
+
+  //double to int conversion for PID which needs int => to not lose accuracy, multiply temperature by 100 to have 0.01 accuracy of input
+  Input = temps[T_SIZE-1] * 100;
+  Setpoint = target_temp * 100;
+  Serial.print("input (*100) = ");
+  Serial.println(Input);
+  Serial.print("setpoint (*100) = ");
+  Serial.println(Setpoint);
   
-  Input = temps[T_SIZE-1];
-  Setpoint = target_temp;
-  
+  Serial.println("DBG");
+
   //turn the PID on
   myQuickPID.SetMode(AUTOMATIC);
 
@@ -731,6 +774,7 @@ void setup() {
   prev_position = 255;
 
   time_last_react = 0;
+  Serial.println("DBG setup end");
 }
 
 /**
@@ -742,6 +786,7 @@ void loop() {
   double temp;
   bool gotTemp = false;
   int8_t diff_position;
+  int light_value;
 
   //Handle possible OTA updates:
   ArduinoOTA.handle();
@@ -755,8 +800,12 @@ void loop() {
     if (WiFi.waitForConnectResult() != WL_CONNECTED) {
       Serial.println("WiFi Connection Failed!");
       digitalWrite(LED_BUILTIN, LOW);//LED ON
+    } else {
+      //also, switch WiFi to STA mode only since it's not needed anymore
+      WiFi.mode(WIFI_STA);
     }
-  //if connected to WiFi, try to init MQTT connection if not connected to MQTT:
+  /*if connected to WiFi, try to init MQTT connection if not connected to MQTT:
+  */
   } else if (!client.connected()){
     digitalWrite(LED_BUILTIN, LOW);//LED ON
     MQTTinit();
@@ -786,13 +835,13 @@ void loop() {
     /**
      * Experimental PID part
     */
-    Input = temps[T_SIZE-1];
-    if ((Input - target_temp) > -0.5) { //we're close or above setpoint, use conservative tuning parameters
-      myQuickPID.SetTunings(consKp, consKi, consKd, consPOn);
-    } else {
+    Input = temps[T_SIZE-1]*100;
+    //if ((Input - target_temp) > -0.5) { //we're close or above setpoint, use conservative tuning parameters
+      //myQuickPID.SetTunings(consKp, consKi, consKd, consPOn);
+    //} else {
       //we're far from setpoint, use aggressive tuning parameters
       myQuickPID.SetTunings(aggKp, aggKi, aggKd, aggPOn);
-    }
+    //}
         
     myQuickPID.Compute();
     
@@ -833,6 +882,8 @@ void loop() {
         char outputstr[16];//just to be sure in case int somehow becomes bigger than 16b
         sprintf(outputstr, "%d", Output);
         client.publish("living_room/valve1/PIDvalue", outputstr);
+        Serial.print("publish PID value=");
+        Serial.println(outputstr);
       }
     } else if (heating_on == false){
       MotorClose(same_direction_threshold);
@@ -903,12 +954,17 @@ void loop() {
     } else {
       temp = getTemp();
     }
+
+    char light_str[5];
+    light_value = analogRead(A0);
+    sprintf(light_str, "%d", light_value);
+    client.publish("living_room/valve1/light", light_str);
     
-    char tempstr[11];
-    sprintf(tempstr, "%.2f", temp);
-    client.publish("living_room/valve1/temp1", tempstr);
-    Serial.print("MQTT publish temp1, tempstr=");
-    Serial.println(tempstr);
+    char temp_str[11];
+    sprintf(temp_str, "%.2f", temp);
+    client.publish("living_room/valve1/temp1", temp_str);
+    Serial.print("MQTT publish temp1, temp_str=");
+    Serial.println(temp_str);
 
     time_last_send = millis();
   }

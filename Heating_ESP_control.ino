@@ -41,8 +41,32 @@ DS18B20 sensor(&oneWire);
   const char* OTApassword = "otapassword";
 #endif
 
+<<<<<<< Updated upstream
 const int T1 = D7;
 const int T3 = D8;
+=======
+//how often to retry connecting to WiFi/MQTT:
+#define RETRY_PERIOD 5000
+unsigned long last_retry = 0;
+
+/**
+ * Struct for loading/getting config to store it in flash in FS
+ */
+struct Config {
+  char ap_ssid [SIZE_CREDENTIAL_UNIT];
+  char ap_psk [SIZE_CREDENTIAL_UNIT];
+  char mqtt_server [40];
+  char mqtt_port [SIZE_CREDENTIAL_UNIT];
+  char mqtt_user [SIZE_CREDENTIAL_UNIT];
+  char mqtt_password [SIZE_CREDENTIAL_UNIT];
+};
+
+struct Config *loaded_config;
+
+//pins to control H-bridge in order to control the valve motor:
+const int T1 = D8;
+const int T3 = D7;
+>>>>>>> Stashed changes
 
 //stores last direction of motor
 #define DIR_OPEN 1
@@ -52,8 +76,13 @@ int dir = DIR_NONE;
 
 //stores sum of time that motor moved in series in one direction 
 // so in summer it doesn't just close all the time
+<<<<<<< Updated upstream
 unsigned long cnt_same_direction = 0; 
 const unsigned long same_direction_threshold = 60 * 1000;
+=======
+unsigned long cnt_same_direction = 0;
+const unsigned long same_direction_threshold = 40 * 1000;
+>>>>>>> Stashed changes
 unsigned long time_until = 0;
 
 #define T_SIZE 6
@@ -80,6 +109,28 @@ unsigned long time_last_react;
 double target_temp = 23.0;
 bool heating_on = true;
 
+<<<<<<< Updated upstream
+=======
+/**PID part:
+  *using library available from https://github.com/Dlloydev/QuickPID
+*/
+int16_t Setpoint = target_temp * 100, Input, Output;
+
+float aggKp = 2, aggKi = 0.2, aggKd = 0.08;
+float consKp = 5, consKi = 0.0001, consKd = 0.001;//not used
+float aggPOn = 0.1; // Range is 0.0 to 1.0 (1.0 is 100% P on Error, 0% P on Measurement)
+float consPOn = 0.00; // Range is 0.0 to 1.0 (0.0 is 0% P on Error, 100% P on Measurement)
+
+/**Stores previous position of valve, used to determine motor movement
+  *0 = fully closed valve, 255 = open
+*/
+int8_t prev_position;
+
+//initial tuning parameters:
+QuickPID myQuickPID(&Input, &Output, &Setpoint, consKp, consKi, consKd, aggPOn, DIRECT);
+
+//window opened/closed detection:
+>>>>>>> Stashed changes
 bool window_opened = false;
 #define HYSTERESIS_OPENED_WINDOW 1.5
 #define HYSTERESIS_CLOSED_WINDOW 0.2
@@ -106,6 +157,143 @@ unsigned long time_last_send = 0;
 WiFiClient espClient;
 PubSubClient client(espClient);
 
+<<<<<<< Updated upstream
+=======
+//HTTP server inspired from example AdvancedWebServer Copyright (c) 2015, Majenko Technologies
+ESP8266WebServer server(80);
+//AsyncWebServer server(80);
+
+//pin from which we can read from photoresistor, higher value means more light detected
+const int light_sensor = A0;
+
+//Pin where signal from middle button is connected, used to detect falling edge (3.3V -> 0V)
+//used to switch boost mode
+const int button_pin = D1;
+int prev_button = HIGH;
+int act_button;
+
+//boost mode variables:
+//to store when boost started
+long long boost_start = -1;//negative value means not active
+//time boost should take, could be changed via incoming MQTT message
+int boost_duration = 3*60*1000; //3 minutes in ms
+/**
+   HTTP webpage inspired from user ACROBOTIC at https://www.youtube.com/watch?v=lyoBWH92svk 
+   and w3schools at https://www.w3schools.com/css/tryit.asp?filename=trycss_forms
+*/
+char webpage[] PROGMEM = R"=====(
+<html>
+<head>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+    }
+    input {
+      width: 100%;
+      padding: 12px 20px;
+      margin: 8px 0;
+      display: inline-block;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    
+    button {
+      width: 100%;
+      background-color: #4CAF50;
+      color: white;
+      padding: 14px 20px;
+      margin: 8px 0;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    
+    button :hover {
+      background-color: #45a049;
+    }
+    
+    form {
+      border-radius: 5px;
+      background-color: #f2f2f2;
+      padding: 20px;
+    }
+  </style>
+</head>
+<body>
+<h2>ESP Heating Valve Credentials Update</h2>
+<form>
+  <label for="WIFIssid">WiFi SSID</label>
+  <input value="" id="WIFIssid" placeholder="SSID of WiFi to connect to"/>
+
+  <label for="WIFIpassword">WiFi password</label>
+  <input value="" id="WIFIpassword" placeholder="password for WiFi to connect to"/>
+
+  <label for="MQTTip">MQTT IP address</label>
+  <input value="" id="MQTTip" placeholder="IP address of MQTT broker"/>
+
+  <label for="MQTTport">MQTT port</label>
+  <input value="" id="MQTTport" placeholder="port of MQTT broker, usually 1883"/>
+
+  <label for="MQTTusername">MQTT username (optional)</label>
+  <input value="" id="MQTTusername" placeholder="MQTT username"/>
+
+  <label for="MQTTpassword">MQTT password (optional)</label>
+  <input value="" id="MQTTpassword" placeholder="MQTT password"/>
+
+  <button onclick="save()">Save changes</button>
+</form>
+</body>
+<script>
+  function save() {
+    var ap_ssid = document.getElementById("WIFIssid").value;
+    var ap_psk = document.getElementById("WIFIpassword").value;
+    var mqtt_server = document.getElementById("MQTTip").value;
+    var mqtt_port = document.getElementById("MQTTport").value;
+    var mqtt_user = document.getElementById("MQTTusername").value;
+    var mqtt_password = document.getElementById("MQTTpassword").value;
+    var data = {ap_ssid:ap_ssid, ap_psk:ap_psk, mqtt_server:mqtt_server, mqtt_port:mqtt_port, mqtt_user:mqtt_user, mqtt_password:mqtt_password};
+
+    var xhr = new XMLHttpRequest();
+    var url = "/settings"; 
+
+    xhr.onreadystatechange = function(){
+      if (this.onreadyState == 4 && this.status == 200) {
+        console.log(xhr.responseText);
+      }
+    };
+    xhr.open("POST", url, true);
+    xhr.send(JSON.stringify(data));
+  }
+</script>
+
+</html>
+)=====";
+
+/**
+ * Shows root webpage with config:
+ *  - WiFi SSID+password
+ *  - MQTT IP address
+ *  could show list of APs nearby
+ */
+void HandleRoot(/*AsyncWebServerRequest *request*/){
+  Serial.println("HandleRoot mainpage");
+  server.send_P(200, "text/html", webpage);
+}
+
+/**
+ * stores JSON data to flashsfile system
+ */
+void HandleSettingsUpdate(/*AsyncWebServerRequest *request*/){
+  Serial.println("HandleSettingsUpdate start");
+
+  //receive JSON data to data and parse it
+  String data = server.arg("plain");
+  DynamicJsonBuffer j_buffer;
+  JsonObject& j_object = j_buffer.parseObject(data);
+
+  yield();
+>>>>>>> Stashed changes
 
 void WifiOtaON() {
   WiFi.mode(WIFI_STA);
@@ -221,12 +409,90 @@ void handleMQTT(char* topic, byte* payload, unsigned int length){
       heating_on = false;
       Serial.println("heat off");
     }
+  } else if (!strcmp(topic, "living_room/valve1/boost")) {
+    if (strncmp(pomtext, "OFF", length - 1) == 0){
+      //boost ON->OFF by MQTT
+      if (boost_start != -1){
+        boost_start = -1;
+        Serial.println("Boost mode turning OFF from MQTT");
+      }
+    } else if (strncmp(pomtext, "ON", length - 1) == 0){
+      //boost ON->ON by MQTT => set starttime to now
+      if (boost_start != -1){
+        boost_start = millis();
+        Serial.println("Boost mode prolonging ON from MQTT");
+      //boost OFF->ON by MQTT
+      } else {
+        boost_start = millis();
+        Serial.println("Boost mode turning ON from MQTT");
+        MotorOpen(same_direction_threshold);
+      }
+    } else {
+      Serial.print("Incoming Boost MQTT msg discarded, unknown value!");
+    }
   } else {
     Serial.print("Incoming MQTT msg discarded, topic=");
     Serial.println(topic);
   }
 }
 
+<<<<<<< Updated upstream
+=======
+/**
+ * initializates MQTT connection. Subscribing happens in setup()
+ * inspired from https://techtutorialsx.com/2017/04/09/esp8266-connecting-to-mqtt-broker/
+ */
+bool MQTTinit(){
+  char m_server[40], m_user[SIZE_CREDENTIAL_UNIT], m_password[SIZE_CREDENTIAL_UNIT];
+  int m_port;
+  if (loaded_config != NULL){
+    Serial.println("Using MQTT config from json in FS:");
+    strncpy(m_server, loaded_config->mqtt_server, 39);
+    m_server[39] = '\0';
+    
+    m_port = atoi(loaded_config->mqtt_port);
+    strncpy(m_user, loaded_config->mqtt_user, SIZE_CREDENTIAL_UNIT-1);
+    m_user[SIZE_CREDENTIAL_UNIT-1] = '\0';
+    strncpy(m_password, loaded_config->mqtt_password, SIZE_CREDENTIAL_UNIT-1);
+    m_password[SIZE_CREDENTIAL_UNIT-1] = '\0';
+  } else {
+    Serial.println("Loading default MQTT config");
+    strcat(m_server, mqttServer);
+    m_port = mqttPort;
+    strcpy(m_user, mqttUser);
+    strcpy(m_password, mqttPassword);
+  }
+  char mqttID[20]="ESPvalve-";
+  strcat(mqttID, String(random(0xffff), HEX).c_str());
+  
+  client.setServer(m_server, m_port);
+  client.setCallback(handleMQTT);
+  unsigned cnt = 0;
+  
+  if (client.connect(mqttID, m_user, m_password )) {
+    Serial.println("MQTT connected");  
+    
+    //SUB to topics valve is interested in to get info about for its operation (controls, weather info, ...)
+    client.subscribe("living_room/valve1/desired_temp/set");
+    client.subscribe("living_room/valve1/mode/set");
+    client.subscribe("living_room/valve1/boost");
+    
+    //MQTT publish info window closed (default when just started)
+    client.publish("living_room/valve1/window_opened", "OFF");
+    
+    return true;
+  } else {
+    Serial.print("failed with state ");
+    Serial.println(client.state());
+    return false;
+  }
+}
+
+/**
+ * gets temperature from DS temperature sensor.
+ * returns temperature as double.
+ */
+>>>>>>> Stashed changes
 double getTemp() {
   sensor.requestTemperatures();
   
@@ -362,9 +628,18 @@ bool CheckMotorTimeUntil(){
 
 void setup() {
   // initialize GPIO pins:
+<<<<<<< Updated upstream
     pinMode(T1, OUTPUT);
     pinMode(T3, OUTPUT);
     pinMode(LED_BUILTIN, OUTPUT);
+=======
+  pinMode(T1, OUTPUT);
+  pinMode(T3, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+
+  pinMode(light_sensor, INPUT);
+  pinMode(button_pin, INPUT);
+>>>>>>> Stashed changes
 
   digitalWrite(LED_BUILTIN, LOW);
 
@@ -373,22 +648,55 @@ void setup() {
   Serial.println("Booting");
 
   WifiOtaON();
+<<<<<<< Updated upstream
   
   //initialize sensor and measure first temp:
   sensor.begin();
   //sensor.setResolution(12);
   temps[T_SIZE-1] = getTemp();
 
+=======
+
+  //initialize sensor and measure first temp:
+  sensor.begin();
+  temps[0] = getTemp();
+  for (int i=1; i<T_SIZE; i++){
+    temps[i] = temps[i-1];
+  }
+  
+>>>>>>> Stashed changes
   timeClient.begin();
   timeClient.update();
 
   MQTTinit();
+<<<<<<< Updated upstream
   
   delay(5000);//wait for the original board to do its bootup thing...
+=======
+  
+  InitWeb();
+
+  //double to int conversion for PID which needs int => to not lose accuracy, multiply temperature by 100 to have 0.01 accuracy of input
+  Input = temps[T_SIZE-1] * 100;
+  Setpoint = target_temp * 100;
+  Serial.print("input (*100) = ");
+  Serial.println(Input);
+  Serial.print("setpoint (*100) = ");
+  Serial.println(Setpoint);
+  
+  //turn the PID on
+  myQuickPID.SetMode(AUTOMATIC);
+
+  delay(2000);//wait for the original board to do its bootup ...
+>>>>>>> Stashed changes
 
   MotorOpen(same_direction_threshold);
   
   time_last_react = 0;
+<<<<<<< Updated upstream
+=======
+  Serial.println("Startup setup end");
+>>>>>>> Stashed changes
 }
 
 void loop() {
@@ -401,6 +709,7 @@ void loop() {
 
   CheckMotorTimeUntil();
 
+<<<<<<< Updated upstream
   if (!client.connected()){
     digitalWrite(LED_BUILTIN, LOW);//LED ON
     MQTTinit();
@@ -410,17 +719,78 @@ void loop() {
     client.loop();
   }
   
+=======
+  /**Check WiFi or MQTT broker connection, if not connected to MQTT, try reconnecting again 
+   * (WiFi reconnection happens automatically)
+  */
+  if (millis() - last_retry > RETRY_PERIOD) {
+    //check WiFi
+    if (WiFi.status() != WL_CONNECTED ) {
+      digitalWrite(LED_BUILTIN, LOW);//LED ON
+    //check MQTT, if not, reconnect
+    } else if (!client.connected()) {
+      digitalWrite(LED_BUILTIN, LOW);//LED ON
+      MQTTinit();
+    //connections are OK, keep connection with MQTT broker alive:
+    } else {
+      digitalWrite(LED_BUILTIN, HIGH);//LED OFF
+      //keep MQTT connection and get possible messages with updates
+      client.loop();
+    }
+    last_retry = millis();
+  }
+
+  //handle webserver requests, if any
+  server.handleClient();
+  //handle MDNS resolve requests, if any
+  //configuration happened in MQTTinit()
+  MDNS.update();
+
+  //check if it's time to decalc and if so, do it
+>>>>>>> Stashed changes
   Decalc();
 
-  //called twice inside this loop so there is not that long possible delay
+  //Boost button press detection + action
+  act_button = digitalRead(button_pin);
+  //if button state changed:
+  if (act_button != prev_button) {
+    //falling edge => button was just pressed
+    if (prev_button == HIGH) {
+      //check if boost was OFF=> turn ON
+      if (boost_start == -1) {
+        boost_start = millis();
+        Serial.println("Boost mode ON from button");
+        MotorOpen(same_direction_threshold);
+        client.publish("living_room/valve1/boost", "ON");
+      //if boost is already happening, cancel it
+      } else {
+        boost_start = -1;
+        Serial.println("Boost mode OFF from button");
+        MotorClose(same_direction_threshold);
+        client.publish("living_room/valve1/boost", "OFF");
+      }
+    }
+    prev_button = act_button;
+  }
+  //check if boost should end by timeout:
+  if (millis() - boost_start > boost_duration && boost_start >= 0) {
+    client.publish("living_room/valve1/boost", "OFF");
+    Serial.println("Boost mode timeouted to OFF");
+    boost_start = -1;
+  }
+
+  /*checks if it's time to stop motor movementt
+    called twice inside the loop so there is not that long possible delay
+  */
   CheckMotorTimeUntil();
   
   //check if it is time to get temp and determine motor movement:
-  if (millis() - time_last_react > REACT_TIME){
+  if (millis() - time_last_react > REACT_TIME) {
     gotTemp = true;
     temp = getTemp();
     TempsPushBack(temp);
     sprintf(temps_text, "Temps: %f %f %f %f", temps[0], temps[1], temps[2], temps[3]); 
+<<<<<<< Updated upstream
     
     Serial.println(temps_text);
   
@@ -458,14 +828,78 @@ void loop() {
         else {
           MotorOpen(OPEN_MULTIPLIER * diff_temp * (-1));
         }
+=======
+    Serial.println(temps_text);
+
+    /**
+     * Experimental PID part
+    */
+    Input = temps[T_SIZE-1]*100;
+    myQuickPID.SetTunings(aggKp, aggKi, aggKd, aggPOn);
+        
+    myQuickPID.Compute();
+    
+    //check if heating is on/off and no motor movement is happening:
+    if (time_until == 0 && heating_on == true && boost_start < 0) {
+      //check opened window => close valve
+      if (OpenedWindow() == true) {
+        window_opened = true;
+        MotorClose(same_direction_threshold);
+        prev_position = 0;
+        
+        //MQTT publish info about opened window
+        client.publish("living_room/valve1/window_opened", "ON");
+      //if window was open and is now closed
+      } else if (window_opened == true) {
+        window_opened = false;
+        //MQTT publish info window closed
+        client.publish("living_room/valve1/window_opened", "OFF");
+        //if temp is too low, continue heating from full blast:
+        if (temps[T_SIZE-1] + 3 < target_temp) {
+          MotorOpen(same_direction_threshold);
+          prev_position = 255;
+        }
+      //heating is ON and window is closed, so we can control heating:
+      } else {
+        diff_position = Output - prev_position;
+        //Check if diff of new position is a bit significant:
+        if (abs(diff_position) >= 10){
+          //move in the correct direction:
+          if (diff_position > 0){
+            MotorOpen(abs(diff_position) / 255.0 * same_direction_threshold);
+          } else {
+            MotorClose(abs(diff_position) / 255.0 * same_direction_threshold);
+          }
+          prev_position = Output;
+        }
+        
+        char outputstr[16];//just to be sure in case int somehow becomes bigger than 16b
+        sprintf(outputstr, "%d", Output);
+        client.publish("living_room/valve1/PIDvalue", outputstr);
+        Serial.print("publish PID value=");
+        Serial.println(outputstr);
+>>>>>>> Stashed changes
       }
     } else if (heating_on == false){
       MotorClose(same_direction_threshold);
     }
+<<<<<<< Updated upstream
     time_last_react = millis();
   } 
 
   /*MQTT temp sending, checks if previous block happend and if so, then it just gets recent temperature from there and doesn't get it from sensor
+=======
+    
+    //log that reaction happened:
+    time_last_react = millis();
+    /*
+     * End of PID part
+    */  
+  }
+  
+  /**
+   * MQTT temp sending, checks if previous block happend and if so, then it just gets recent temperature from there and doesn't get it from sensor
+>>>>>>> Stashed changes
    * that's because the sensor could get heated up from just recent sending of temp data.
   */
   if (millis() - time_last_send > MQTT_SEND_PERIOD){
@@ -484,5 +918,8 @@ void loop() {
     time_last_send = millis();
   }
 
+<<<<<<< Updated upstream
   //delay(200);
+=======
+>>>>>>> Stashed changes
 }

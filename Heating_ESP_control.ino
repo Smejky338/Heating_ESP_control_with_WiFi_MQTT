@@ -1,11 +1,34 @@
 /*
+ * This program is used to add connected functionality to 
+ *  thermostatic radiator valve (TRV) head Eqiva EQ-3 N.
+ * It enables connection via MQTT protocol to central smart home units such as Home Assistant.
+ * ESP8266 board NodeMCU D1 mini is connected to the original board of EQ-3.
+ * 
+ * Light sensor is connected like this: 
+ *   pin 3.3V - photoresistor - pin A0 - 10k resistor - pin GND 
+ * H-bridge pins are connected via 27 Ohm resistors to T1+T2 and T3+T4
+ *   if the valve is turning the other way, switch the pins
+ * DS18B20 temp sensor is connected to 3.3V and GND, middle pin is connected via (+-)4.6k pullup
+ *   HIGHLY recommended to use wires at least 15 cm long, otherwise the reading could be too high
+ *     learned it the hard way
+ * Change config below according to your needs or enter using AP+webserver:
+ *  SSID is "ESPvalve-" & random 4 hex letters
+ *  default WiFi AP password: "WiFiAPpassword", look below
+ *  access using [SSID].local or 192.168.4.1
+ *    enter credentials, click the green button and enjoy (:
+ *    
+ * @author Jan Smejkal
+ * This program is a part of bachelor's thesis at FIT BUT Brno.
+ * 2021
+ *  
    TODO:
-   switch PID control and tune params (hard because I part stacks up when central heating is off)
+   PID control - tune params (hard because I part stacks up when central heating is off)
       - test & tune
    Opens AP to login and change credentials of network & MQTT broker 
       - done, possible extension: show list of available WiFi networks
         ^https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiScan/WiFiScan.i
    BOOST from HASS
+      - done
 */
 #include <ESP8266WiFi.h>
 
@@ -143,8 +166,8 @@ bool heating_on = true;
 */
 int16_t Setpoint = target_temp * 100, Input, Output;
 
-float Kp = 2, Ki = 0.3, Kd = 0.08;
-float POn = 0.5; // Range is 0.0 to 1.0 (1.0 is 100% P on Error, 0% P on Measurement)
+float Kp = 1.5, Ki = 1, Kd = 0.1;
+float POn = 0.05; // Range is 0.0 to 1.0 (1.0 is 100% P on Error, 0% P on Measurement)
 //initial tuning parameters:
 QuickPID myQuickPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, POn, DIRECT);
 
@@ -521,14 +544,22 @@ void handleMQTT(char* topic, byte* payload, unsigned int length){
       heating_on = false;
       Serial.println("heat off");
     }
-  } else if (!strcmp(topic, "living_room/valve1/boost")) {
-    if (strncmp(pomtext, "OFF", length - 1) == 0){
+  } else if (!strcmp(topic, "living_room/valve1/boost/set")) {
+    if (strncmp(pomtext, "OFF", 3) == 0){
+      //feedback message recieved
+      client.publish("living_room/valve1/boost", "OFF");
+      
       //boost ON->OFF by MQTT
       if (boost_start != -1){
         boost_start = -1;
         Serial.println("Boost mode turning OFF from MQTT");
+      } else {
+        Serial.println("Boost mode staying OFF from MQTT");
       }
-    } else if (strncmp(pomtext, "ON", length - 1) == 0){
+    } else if (strncmp(pomtext, "ON", 2) == 0) {
+      //feedback message recieved
+      client.publish("living_room/valve1/boost", "ON");
+      
       //boost ON->ON by MQTT => set starttime to now
       if (boost_start != -1){
         boost_start = millis();
@@ -540,7 +571,7 @@ void handleMQTT(char* topic, byte* payload, unsigned int length){
         MotorOpen(same_direction_threshold);
       }
     } else {
-      Serial.print("Incoming Boost MQTT msg discarded, unknown value!");
+      Serial.println("Incoming Boost MQTT msg discarded, unknown value!");
     }
   } else {
     Serial.print("Incoming MQTT msg discarded, topic=");
@@ -585,7 +616,7 @@ bool MQTTinit(){
     //SUB to topics valve is interested in to get info about for its operation (controls, weather info, ...)
     client.subscribe("living_room/valve1/desired_temp/set");
     client.subscribe("living_room/valve1/mode/set");
-    client.subscribe("living_room/valve1/boost");
+    client.subscribe("living_room/valve1/boost/set");
     
     //MQTT publish info window closed (default when just started)
     client.publish("living_room/valve1/window_opened", "OFF");
@@ -785,6 +816,8 @@ void setup() {
   
   //turn the PID on
   myQuickPID.SetMode(AUTOMATIC);
+  //set PID control variables (tune it)
+  myQuickPID.SetTunings(Kp, Ki, Kd, POn); 
 
   delay(2000);//wait for the original board to do its bootup ...
 
@@ -890,7 +923,6 @@ void loop() {
      * Experimental PID part
     */
     Input = temps[T_SIZE-1]*100;
-    myQuickPID.SetTunings(Kp, Ki, Kd, POn);
         
     myQuickPID.Compute();
     

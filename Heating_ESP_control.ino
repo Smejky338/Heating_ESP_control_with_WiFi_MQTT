@@ -27,8 +27,6 @@
    Opens AP to login and change credentials of network & MQTT broker 
       - done, possible extension: show list of available WiFi networks
         ^https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiScan/WiFiScan.i
-   BOOST from HASS
-      - done
 */
 #include <ESP8266WiFi.h>
 
@@ -166,7 +164,7 @@ bool heating_on = true;
 */
 int16_t Setpoint = target_temp * 100, Input, Output;
 
-float Kp = 1.5, Ki = 1, Kd = 0.1;
+float Kp = 1.5, Ki = 0.5, Kd = 0.15;
 float POn = 0.05; // Range is 0.0 to 1.0 (1.0 is 100% P on Error, 0% P on Measurement)
 //initial tuning parameters:
 QuickPID myQuickPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, POn, DIRECT);
@@ -226,7 +224,7 @@ long long boost_start = -1;//negative value means not active
 //time boost should take, could be changed via incoming MQTT message
 int boost_duration = 3*60*1000; //3 minutes in ms
 /**
-   HTTP webpage inspired from user ACROBOTIC at https://www.youtube.com/watch?v=lyoBWH92svk 
+   HTTP webpage inspired from user ACROBOTIC at https://www.youtube.com/watch?v=lyoBWH92svk or https://github.com/acrobotic/Ai_Tips_ESP8266/blob/master/wifi_modes_switch/wifi_modes_switch.ino
    and w3schools at https://www.w3schools.com/css/tryit.asp?filename=trycss_forms
 */
 char webpage[] PROGMEM = R"=====(
@@ -330,7 +328,7 @@ void HandleRoot(){
 }
 
 /**
- * stores JSON data to flashsfile system
+ * stores JSON data to flashsfile system and reboots.
  */
 void HandleSettingsUpdate(){
   Serial.println("HandleSettingsUpdate start");
@@ -524,7 +522,7 @@ void handleMQTT(char* topic, byte* payload, unsigned int length){
   }
   
   unsigned i = 0;
-  for (; i<length; i++){
+  for (; i < length; i++){
     pomtext[i] = payload[i];
   }
   pomtext[i] = 0;
@@ -846,7 +844,8 @@ void loop() {
   //check if it's time to stop motor movement:
   CheckMotorTimeUntil();
 
-  /**Check WiFi or MQTT broker connection, if not connected to MQTT, try reconnecting again 
+  /**
+   * Check WiFi or MQTT broker connection, if not connected to MQTT, try reconnecting again 
    * (WiFi reconnection happens automatically)
   */
   if (millis() - last_retry > RETRY_PERIOD) {
@@ -905,8 +904,9 @@ void loop() {
     boost_start = -1;
   }
 
-  /* checks if it's time to stop motor movementt
-   * called twice inside the loop so there is not that long possible delay
+  /**
+   * Checks if it's time to stop motor movementt
+   * Called twice inside the loop so there is not that long possible delay
   */
   CheckMotorTimeUntil();
   

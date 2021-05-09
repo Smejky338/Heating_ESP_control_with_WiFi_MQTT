@@ -6,7 +6,7 @@
  * 
  * Light sensor is connected like this: 
  *   pin 3.3V - photoresistor - pin A0 - 10k resistor - pin GND 
- * H-bridge pins are connected via 27 Ohm resistors to T1+T2 and T3+T4
+ * H-bridge pins are connected via 27 Ohm resistors to T1+T2 and T3+T4 (probably not necessary, just in case to protect ESP)
  *   if the valve is turning the other way, switch the pins
  * DS18B20 temp sensor is connected to 3.3V and GND, middle pin is connected via (+-)4.6k pullup
  *   HIGHLY recommended to use wires at least 15 cm long, otherwise the reading could be too high
@@ -129,7 +129,7 @@ int dir = DIR_NONE;
 //stores sum of time that motor moved in series in one direction
 // so in summer it doesn't just close all the time
 unsigned long cnt_same_direction = 0;
-const unsigned long same_direction_threshold = 40 * 1000;
+const unsigned long same_direction_threshold = 70 * 1000;
 unsigned long time_until = 0;
 
 #define T_SIZE 6
@@ -141,50 +141,38 @@ double temps[T_SIZE] = {21, 21, 21, 21, 21, 21};
 
 unsigned long time_last_react;
 
-//hysteresis when valve reacts on temperature over/under desired temp. target
-#define HYSTERESIS_OVER 0.05
-
-#define HYSTERESIS_UNDER 0.2
-
-#define DIFF_MULTIPLIER 4
-
-//multiplier for closing/opening valve in ms per 1 dg. C
-#define CLOSE_MULTIPLIER 5000
-
-#define OPEN_MULTIPLIER 1500
-
-//multiplier for closing valve when already above desired temp so it doesn't overshoot
-#define OPEN_ABOVE_MULTIPLIER 200
-
 double target_temp = 21.0;
 bool heating_on = true;
 
-/**PID part:
+/**
+ * PID part:
   *using library available from https://github.com/Dlloydev/QuickPID
 */
 int16_t Setpoint = target_temp * 100, Input, Output;
 
-float Kp = 1.5, Ki = 0.5, Kd = 0.15;
+float Kp = 2.0, Ki = 0.007, Kd = 0.02;
 float POn = 0.05; // Range is 0.0 to 1.0 (1.0 is 100% P on Error, 0% P on Measurement)
 //initial tuning parameters:
 QuickPID myQuickPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, POn, DIRECT);
 
-/**Stores previous position of valve, used to determine motor movement
+/**
+ * Stores previous position of valve, used to determine motor movement
   *0 = fully closed valve, 255 = open
 */
-int8_t prev_position;
+int16_t prev_position = 255;
 
 /*
  * window opened/closed detection:
 */
 bool window_opened = false;
 #define HYSTERESIS_OPENED_WINDOW 1
-#define HYSTERESIS_CLOSED_WINDOW 0.3
+#define HYSTERESIS_CLOSED_WINDOW 0.25
 
-/* NTP section
- * update every 24 hrs.
+/* 
+ *  NTP section
+ * update every 48 hrs
 */
-#define NTP_PERIOD 1000*60*60*24
+#define NTP_PERIOD 1000*60*60*48
 
 //local offset in s. 1hr=3600s
 #define PragueOffset 3600 //UTC+1
@@ -195,6 +183,7 @@ NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 3600, NTP_PERIOD);
 
 unsigned long last_ntp = 0;
 
+//stores info that decalc happened this week
 bool decalc_done = false;
 
 //MQTT
@@ -225,7 +214,7 @@ long long boost_start = -1;//negative value means not active
 int boost_duration = 3*60*1000; //3 minutes in ms
 /**
    HTTP webpage inspired from user ACROBOTIC at https://www.youtube.com/watch?v=lyoBWH92svk or https://github.com/acrobotic/Ai_Tips_ESP8266/blob/master/wifi_modes_switch/wifi_modes_switch.ino
-   and w3schools at https://www.w3schools.com/css/tryit.asp?filename=trycss_forms
+   and design from w3schools at https://www.w3schools.com/css/tryit.asp?filename=trycss_forms
 */
 char webpage[] PROGMEM = R"=====(
 <html>
@@ -374,8 +363,8 @@ void InitWeb(){
 }
 
 /**
- * Loads config and stores it in variable
- * inspired from ConfigFile example by Ivan Grokhotkov.
+ * Loads config and stores it in variable struct Config.
+ * Inspired from ConfigFile example by Ivan Grokhotkov in Arduino IDE.
  */
 struct Config *LoadConfig(const char *filename){
   File config_file = SPIFFS.open("/config.json", "r");
@@ -459,7 +448,8 @@ void WifiOtaON() {
       Serial.println(WiFi.softAPIP());
     }
   }
-  
+
+  //if mDNS not started, start it
   if (!MDNS.begin(APssid)){
     Serial.println("mDNS startup failed!");
   } else {
@@ -468,8 +458,9 @@ void WifiOtaON() {
   }
   
   //set password for OTA uploading new code to ESPs
+  //inspired from Arduino basicOTA example from https://github.com/esp8266/Arduino/blob/master/libraries/ArduinoOTA/examples/BasicOTA/BasicOTA.ino
   ArduinoOTA.setPassword(OTApassword);
-
+  
   ArduinoOTA.onStart([]() {
     String type;
     if (ArduinoOTA.getCommand() == U_FLASH) {
@@ -707,8 +698,8 @@ void MotorOpen(unsigned time){
     Serial.println("NOT opening valve, over threshold, cnt=" + String(cnt_same_direction));
     return;
   }
-  digitalWrite(T1, HIGH);
-  digitalWrite(T3, LOW);
+  analogWrite(T1, 700);
+  analogWrite(T3, 0);
   
   if (dir == DIR_OPEN){
     cnt_same_direction += time;
@@ -718,7 +709,7 @@ void MotorOpen(unsigned time){
   }
   
   time_until = millis()+time;
-  Serial.println("Opening valve, should be opened in " + String(time) + "ms at " + String(time_until) + ".");
+  Serial.println("Opening valve @700/1023, should be opened in " + String(time) + "ms at " + String(time_until) + ".");
 }
 
 /**
@@ -730,8 +721,8 @@ void MotorClose(unsigned time){
     Serial.println("NOT closing valve, over threshold, cnt=" + String(cnt_same_direction));
     return;
   }
-  digitalWrite(T1, LOW);
-  digitalWrite(T3, HIGH);
+  analogWrite(T1, 0);
+  analogWrite(T3, 700);
 
   if (dir == DIR_CLOSE){
     cnt_same_direction += time;
@@ -741,7 +732,7 @@ void MotorClose(unsigned time){
   }
 
   time_until = millis()+time;
-  Serial.println("Closing valve, should be closed in " + String(time) + "ms at " + String(time_until) + ".");
+  Serial.println("Closing valve @700/1023, should be closed in " + String(time) + "ms at " + String(time_until) + ".");
 }
 
 /*
@@ -749,10 +740,9 @@ void MotorClose(unsigned time){
  * returns true when canceling action, false when no action canceled.
 */
 bool CheckMotorTimeUntil(){
-  if (time_until <= millis()-100){
-    digitalWrite(T1, HIGH);
-    digitalWrite(T3, HIGH);
-    delay(100);
+  if (time_until <= millis() - 50){
+    digitalWrite(T1, LOW);
+    digitalWrite(T3, LOW);
     if (time_until > 0) {
       Serial.print("Cancelling closing/opening, should have been closed/opened at T_U=" + String(time_until) + ", diff=");
       Serial.println(String(millis()-time_until) + ", now=" + String(millis()));
@@ -773,6 +763,8 @@ void setup() {
   // initialize GPIO pins:
   pinMode(T1, OUTPUT);
   pinMode(T3, OUTPUT);
+  //default PWM is 1000 Hz, which is hearable, changed to 32k out of hearing range
+  analogWriteFreq(32000);
   pinMode(LED_BUILTIN, OUTPUT);
 
   pinMode(light_sensor, INPUT);
@@ -782,7 +774,7 @@ void setup() {
 
   //initializes serial communication, accessible by cable:
   Serial.begin(115200);
-  Serial.println("Booting");
+  Serial.println("### Booting ###");
 
   SPIFFS.begin();
   
@@ -790,7 +782,7 @@ void setup() {
 
   //starts WiFi STAtion, if it doesn't connect succesffully, starts AP to store new settings. and OTA updates endpoint and mDNS responder
   WifiOtaON();
-
+  
   //initialize sensor and measure first temp:
   sensor.begin();
   temps[0] = getTemp();
@@ -817,9 +809,10 @@ void setup() {
   //set PID control variables (tune it)
   myQuickPID.SetTunings(Kp, Ki, Kd, POn); 
 
-  delay(2000);//wait for the original board to do its bootup ...
+  //wait for the original board to do its bootup...
+  delay(2000);
 
-  //set valve position to baseline (fully opened)
+  //set valve position to baseline (fully opened), helps with installation
   MotorOpen(same_direction_threshold);
   prev_position = 255;
 
@@ -835,7 +828,7 @@ void loop() {
   char temps_text[32];
   double temp;
   bool gotTemp = false;
-  int8_t diff_position;
+  int16_t diff_position;
   int light_value;
 
   //Handle possible OTA updates:
@@ -949,13 +942,31 @@ void loop() {
       //heating is ON and window is closed, so we can control heating:
       } else {
         diff_position = Output - prev_position;
+        //DBG output
+        Serial.print(Output); Serial.print(" ");
+        Serial.print(prev_position); Serial.print(" ");
+        Serial.print("abs=");
+        Serial.println(abs(diff_position));
+        Serial.print("diff=");
+        Serial.println(diff_position);
+        
         //Check if diff of new position is a bit significant:
-        if (abs(diff_position) >= 10){
+        if (abs(diff_position) >= 10) {
           //move in the correct direction:
-          if (diff_position > 0){
-            MotorOpen(abs(diff_position) / 255.0 * same_direction_threshold);
+          if (diff_position > 0) {
+            //if getting to fully open, open even more so we can be sure we hit edge
+            if (Output == 255){
+              MotorOpen(diff_position / 255.0 * same_direction_threshold + 5000);
+            } else {
+              MotorOpen(diff_position / 255.0 * same_direction_threshold);
+            }
           } else {
-            MotorClose(abs(diff_position) / 255.0 * same_direction_threshold);
+            //if getting to fully closed, close even more so we can be sure we hit edge
+            if (Output == 0) {
+              MotorClose(abs(diff_position) / 255.0 * same_direction_threshold + 5000);
+            } else {
+              MotorClose(abs(diff_position) / 255.0 * same_direction_threshold);
+            }
           }
           prev_position = Output;
         }
@@ -987,7 +998,7 @@ void loop() {
     } else {
       temp = getTemp();
     }
-
+    
     char light_str[5];
     light_value = analogRead(A0);
     sprintf(light_str, "%d", light_value);
@@ -1001,5 +1012,4 @@ void loop() {
 
     time_last_send = millis();
   }
-
 }

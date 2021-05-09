@@ -1,0 +1,103 @@
+#Jan Smejkal, 2021 FIT BUT
+#config in Home Assistant at /config/configuration.yaml
+
+default_config:
+
+# Text to speech
+tts:
+  - platform: google_translate
+
+#group: !include groups.yaml
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+#sensors:
+sensor:
+  - platform: mqtt
+    name: "Ventil 1 senzor teploty"
+    state_topic: "living_room/valve1/temp1"
+    unit_of_measurement: "°C"
+  - platform: mqtt
+    name: "Ventil 1 PID Output"
+    state_topic: "living_room/valve1/PIDvalue"
+  - platform: mqtt
+    name: "Ventil 1 senzor světla"
+    state_topic: "living_room/valve1/light"
+  - platform: mqtt
+    name: "Ventil 2 senzor teploty"
+    state_topic: "living_room/valve2/temp1"
+    unit_of_measurement: "°C"
+  - platform: mqtt
+    name: "Ventil 2 PID Output"
+    state_topic: "living_room/valve2/PIDvalue"
+  - platform: mqtt
+    name: "Ventil 2 senzor světla"
+    state_topic: "living_room/valve2/light"
+
+#switches for boost mode:
+switch:
+  - platform: mqtt
+    name: "Ventil 1 Boost"
+    command_topic: "living_room/valve1/boost/set"
+    state_topic: "living_room/valve1/boost"
+  - platform: mqtt
+    name: "Ventil 2 Boost"
+    command_topic: "living_room/valve2/boost/set"
+    state_topic: "living_room/valve2/boost"
+
+#climate control settings:
+climate:
+  - platform: mqtt
+    name: "Ventil 1"
+    modes:
+      - "off"
+      - "heat"
+    current_temperature_topic: "living_room/valve1/temp1"
+    mode_command_topic: "living_room/valve1/mode/set"
+    temperature_command_topic: "living_room/valve1/desired_temp/set"
+    precision: 0.1
+    temp_step: 0.5
+  - platform: mqtt
+    name: "Ventil 2"
+    modes:
+      - "off"
+      - "heat"
+    current_temperature_topic: "living_room/valve2/temp1"
+    mode_command_topic: "living_room/valve2/mode/set"
+    temperature_command_topic: "living_room/valve2/desired_temp/set"
+    precision: 0.1
+    temp_step: 0.5
+
+#Grouping of entities to rooms/groups:
+group:
+  Obývák:
+    entities:
+      - sensor.ventil_1_senzor_teploty
+      - sensor.ventil_2_senzor_teploty
+      - climate.ventil_1
+      - climate.ventil_2
+      - binary_sensor.ventil_1_otevrene_okno
+      - binary_sensor.ventil_2_otevrene_okno
+
+#window opened sensor entity:
+binary_sensor:
+  - platform: mqtt
+    state_topic: "living_room/valve1/window_opened"
+    name: "Ventil 1 otevrene okno"
+  - platform: mqtt
+    state_topic: "living_room/valve2/window_opened"
+    name: "Ventil 2 otevrene okno"
+
+#influxdb integration settings:
+influxdb:
+  database: homeassistant
+  username: homeassistant
+  password: homeassistant
+  max_retries: 3
+  ssl: false
+  verify_ssl: false
+  default_measurement: state
+
+
+discovery:

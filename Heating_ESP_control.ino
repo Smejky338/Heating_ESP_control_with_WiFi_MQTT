@@ -4,13 +4,15 @@
  * It enables connection via MQTT protocol to central smart home units such as Home Assistant.
  * ESP8266 board NodeMCU D1 mini is connected to the original board of EQ-3.
  * 
+ * Connections: (also in folder /wiring/)
  * Light sensor is connected like this: 
  *   pin 3.3V - photoresistor - pin A0 - 10k resistor - pin GND 
- * H-bridge pins are connected via 27 Ohm resistors to T1+T2 and T3+T4 (probably not necessary, just in case to protect ESP)
+ * H-bridge pins are connected via 27 Ohm resistors to T1+T2 and T3+T4 (probably not necessary, just in case to protect ESP pins)
  *   if the valve is turning the other way, switch the pins
  * DS18B20 temp sensor is connected to 3.3V and GND, middle pin is connected via (+-)4.6k pullup
  *   HIGHLY recommended to use wires at least 15 cm long, otherwise the reading could be too high
  *     learned it the hard way
+ * 
  * Change config below according to your needs or enter using AP+webserver:
  *  SSID is "ESPvalve-" & random 4 hex letters
  *  default WiFi AP password: "WiFiAPpassword", look below
@@ -18,15 +20,15 @@
  *    enter credentials, click the green button and enjoy (:
  *    
  * @author Jan Smejkal
- * This program is a part of bachelor's thesis at FIT BUT Brno.
+ * This program is a part of a bachelor's thesis at FIT BUT Brno.
  * 2021
  *  
-   TODO:
-   PID control - tune params (hard because I part stacks up when central heating is off)
-      - test & tune
-   Opens AP to login and change credentials of network & MQTT broker 
-      - done, possible extension: show list of available WiFi networks
-        ^https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiScan/WiFiScan.i
+ *TODO:
+ *  PID control - tune params (hard because I part stacks up when central heating is off)
+ *     - test & tune
+ *  Opens AP to login and change credentials of network & MQTT broker 
+ *     - done, possible extension: show list of available WiFi networks
+ *       ^https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiScan/WiFiScan.i
 */
 #include <ESP8266WiFi.h>
 
@@ -409,7 +411,7 @@ struct Config *LoadConfig(const char *filename){
  * If connection to WiFi as STA (client) is not successful, open AP to load new config.
  */
 void WifiOtaON() {
-  //default is STATION+AP and we want that
+  //default is STATION+AP
   //to configure WiFi credentials + IP address of server
   WiFi.mode(WIFI_STA);
 

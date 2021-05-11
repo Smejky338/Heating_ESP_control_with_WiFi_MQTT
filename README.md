@@ -36,4 +36,5 @@ Samotné soubory a jejich obsah včetně komentářů jsou v anglickém jazyce.
 - *wiring/* : složka se schématem a obrázky úpravy
 - *pictures/* : složka fotografií nainstalované hlavice
 - *Home Assistant config/* : složka s konfiguračním souborem pro připojení Home Assistanta k MQTT brokeru a integrací zařízení, dále zdrojový kód programu termostatu pro Node-RED (*ThermostatNodeRED.json*).
+- *poster/poster.pdf* : PDF plakátu k bakalářské práci
 

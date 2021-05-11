@@ -6,4 +6,9 @@ Also added connected other functionality thanks to ESP8266-based NodeMCU D1 mini
 
 If there are invalid credentials, the head starts WiFi Access Point where you can set new credentials via integrated config webpage.
 
+made for Arduino IDE.
+
 ![hlavice-nainstalovana](https://user-images.githubusercontent.com/16916837/117783437-d2411b80-b242-11eb-93d1-e63aa802ada7.jpg)
+
+Config webpage:
+![ESP-aktualizace-údajů](https://user-images.githubusercontent.com/16916837/117785266-b3438900-b244-11eb-924d-e8531e845c0f.png)

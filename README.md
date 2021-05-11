@@ -5,3 +5,5 @@ Modified cheap heating radiator valve (TRV) head Eqiva EQ3-N to control heating 
 Also added connected other functionality thanks to ESP8266-based NodeMCU D1 mini: WiFi & MQTT connection to central control unit such as Home Assistant, window opened detection, boost mode control from Home Assistant by pressing a button on the TRV head, light sensor, temperature sending to log in Home Assistant.
 
 If there are invalid credentials, the head starts WiFi Access Point where you can set new credentials via integrated config webpage.
+
+![hlavice-nainstalovana](https://user-images.githubusercontent.com/16916837/117783437-d2411b80-b242-11eb-93d1-e63aa802ada7.jpg)
